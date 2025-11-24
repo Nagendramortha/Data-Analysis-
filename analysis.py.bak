@@ -1,0 +1,239 @@
+#!/usr/bin/env python3
+"""
+analysis.py
+
+Professional data analysis script for internship Task 5:
+- Loads a CSV (sales data)
+- Runs summary statistics and missing-value checks
+- Aggregates using groupby() + sum()
+- Produces and saves plots to ./outputs/
+- Writes a short textual report (report.txt)
+
+Usage:
+    python analysis.py --csv path/to/sales.csv
+or
+    python analysis.py            # will prompt for path
+"""
+
+from __future__ import annotations
+import argparse
+import logging
+import os
+from typing import optional, List
+
+import pandas as pf
+import matplotlib.pyplot as plt
+
+# --------Configuration -----------------------
+
+OUTPUT_DIR = 'outputs'
+REPORT_FILE = os.path.join(OUTPUT_DIR,"report.txt")
+PLOTS = {
+		"top_products": os.path.join(OUTPUT_DIR, "top_products_by_sales.png"),
+		"region_sales:" os.path.join(OUTPUT_DIR, "sales_by_region.png"),
+		"time_series": os.path.join(OUTPUT_DIR, "monthly_sales_trend.png"),
+		}
+		
+logging.basicConfig(level = logging.INFO, format="[%(levelname)s] %(message)s")
+
+
+#-------Utility functions ---------
+def ensure_output_dir(path: str = OUTPUT_DIR) -> None:
+	os.makedirs(path, exist_ok=True)
+	
+
+def load_csv(path: str) -> pd.DataFrame:
+	"""Load CSV into DataFrame, attempt to parse dates if possible."""
+	logging.info("Loading CSV: %s",path)
+	try:
+		# First try: parse common date columns if presrnt
+		df = pd.read_csv(path)
+	except Exception as exc:
+		logging.error("Failed to load CSV: %s", exc)
+		raise
+		
+	# Try to parse any column that Looks a date
+	for col in df.columns:
+		if col.lower() in ("date", "order_date", "sale_date", "timestamp"):
+			try:
+				df[col] = pd.to_datetime(df[col])
+				logging.info("Parsed '%s' as datetime.",col)
+			except Exception:
+				logging.debug("Could not parse column %s as datetime.", col)
+	return df
+	
+def basic_report(df: pd.DataFrame) -> str:
+	"""Return a short textual summary of the dataframe (head, shape, missing)."""
+	lines: List[str] = []
+	lines.append("DATA FRAME SUMMARY")
+	lines.append("-"*40)
+	lines.append(f"Shape: {df.shape}")
+	lines.append("\nColumns and dtypes:")
+	lines.append(df.dtypes.to_string())
+	lines.append("\n\nMissing Values (per column):")
+	missing = df.isna().sum()
+	lines.append(missing[missing > 0].to_string() if missing.any() else "No missing values detected.")
+	lines.append("\n\nNumeric summary (describe):")
+	lines.append(df.select_dtypes("number".describe().to_string()))
+	return "\n".join(lines)
+	
+def infer_columns(df: pd.DataFrame):
+	"""Try to infer useful column names: sales_col, qty_col, date_col, product_col, region_col."""
+	cols = [c.lower() for c in df.columns]
+	sales_col = None
+	qty_col = None
+	date_col = None
+	product_col = None
+	region_col = None
+	
+	for c in cols:
+		if c in ("Sales", "amount", "total", "revenue"):
+			sales_col = df.columns[cols.index(c)]
+		if c in ("quantity", "qty", "units"):
+			qty_col = df.columns[cols.index(c)]
+		if c in ("date", "order_date", "timestamp"):
+			date_col = df.columns[cols.index(c)]
+		if c in ("product", "product_name", "item", "sku"):
+			product_col = df.columns[cols.index(c)]
+		if c in ("region", "country", "state", "area"):
+			region_col = df.columns[cols.index(c)]
+			
+	# If sales_col not found, check for any numeric column that looks like money
+	if not sales_col:
+		numeric = df.select_dtypes("number").columns.tolist()
+		if numeric:
+			#Choose the largest-variance numeric column as a guess
+			sales_col = max(numeric, key=lambda x: df[x].var() if df[x].var() is not None else 0)
+			logging.info("Guessed sales column as '%s'", sales_col)
+			
+	return sales_col, qty_col, date_col, product_col, region_col
+	
+def top_products_by_sales(df: pd.DataFrame, sales_col: str, product_col: str, top_n: int=10):
+	"""Group by product and return top products by summed sales."""
+	g = df.groupby(product_col)[sales_col].sum().sort_values(ascending=False)
+	return g.head(top_n)
+	
+def sales_by_region(df: pf.DataFrame, sales_col: str, region_col: str):
+	"""Group by region and return total sales per region."""
+	return df.groupby(region_col)[sales_col].sum().sort_values(ascending=False)
+	
+def monthly_sales_trend(df: pd.DataFrame, sales_col: str, date_col: str):
+	"""Aggregate sales by month (requires parsed datatime column)."""
+	series = df.set_index(date_col)[sales_col].resample("M").sum()
+	return series
+	
+def plot_bar(series: pd.Series, title: str, ylabel: str, filepath: str, figsize=(10, 6)):
+	plt.figure(figsize=figsize)
+	series.plot(kind="bar", rot=45)
+	plt.title(title)
+	plt.ylabel(ylabel)
+	plt.tight_layout()
+	plt.savefig(filepath)
+	plt.close()
+	logging.info("Saved plot: %s", filepath)
+	
+def write_report(text: str, path: str = REPORT_FILE):
+	with open(path, "w", encoding="utf-8") as f:
+		f.write(text)
+	logging.info("Report written to %s", path)
+	
+	
+# ------Main pipeline -------
+def run_analysis(csv_path: str, top_n: int = 10):
+	ensure_output_dir()
+	df = load_csv(csv_path)
+	
+	report_lines: List[str] = []
+	report_lines.append(f"Analysis for: {csv_path}")
+	report_lines.append("=" * 80)
+	report_lines.append(basic_report(df))
+	report_lines.append("\n" + "=" * 80 + "\n")
+	
+	sales_col, qty_col, date_col, product_col, region_col = infer_columns(df)
+	report_lines.append("INFERRED COLUMNS")
+	report_lines.append(f"sales_col: {sales_col}\nqty_col:{qty_col}\ndate_col: {date_col}\nproduct_col: {product_col}\nregion_col: {region_col}\n")
+	report_lines.append("\n" + "=" * 80 + "\n")
+	
+	# if Sales column missing -> exit gracefully
+	
+	if not sales_col:
+		msg = "No sales-like numeric column found. Cannot compute sales aggregates."
+		logging.error(msg)
+		report_lines.append(msg)
+		write_report("\n".join(report_lines))
+		return
+	# Top products by sales (if product_col present)
+	if product_col:
+		top_products = top_products_by_sales(df, sales_col, product_col, top_n=top_n)
+		report_lines.append("Top Product by sales:")
+		report_lines.append(top_products.to_string())
+		# Plot
+		plot_bar(top_products, f"Top {len(top_products)} products by {sales_col}", sales_col, PLOTS["top_products"])
+	else:
+		report_lines.append("Product column not detected; skipping product-level analysis.")
+		
+		
+	# Region sales
+	if region_col:
+		region_sales = sales_by_region(df, sales_col, region_col)
+		report_lines.append("\nSales by region:")
+		report_lines.append(region_sales.to_string())
+		plot_bar(region_sales, "Sales by Region", sales_col, PLOTS["region_sales"])
+	else:
+		report_lines.append("Region column not detected; skiping region-level analysis.")
+	
+	# Time series
+	if date_col and pd.api.types.is_datetime64_any_dtype(df[date_col]):
+		monthly = monthly_sales_trend(df, sales_col, date_col)
+		report_lines.append("\nMonthly sales trend:")
+		report_lines.append(monthly.to_string())
+		plot_line(monthly, "Monthly Sales Trend", sales_col, PLOST["time_series"])
+	else:
+		report_lines.append("Date column not detected or not parsed as datetime; skipping time series analysis.")
+		
+	# Additional helpful outputs
+	if qty_col:
+		total_qty = df[qty_col].sum()
+		report_lines.append(f"\nTotal quantity sold(column='{qty_col}'):{total_qty}")
+		
+	# Top - level aggregates
+	total_sales = df[sales_col].sum()
+	avg_saless = df[sales_col].mean()
+	report_lines.append(f"\nTotal {sales_col}: {total_sales:.2f}")
+	report_lines.append(f"Average {sales_col} per row: {avg_sales:.2f}")
+	
+	# Save report
+	write_report("\n".join(report_lines))
+	logging.info("Analysis complete. Output saved to %s", OUTPUT_DIR)
+	
+	
+# -------CLI -----------------
+def build_parser() -> argparse.ArgumentParser:
+	p = argprase.ArgumentParse(description="Sales CSV Analysis (Intership level)")
+	p.add_argument("--csv", help="path to sales CSV  file", required = False)
+	p.add_argument("--top", help="Top N products to show (default 10)", type=int, default=10)
+	return p
+	
+def main(argv: Optional[List[str]] = None) -> int:
+	parser = build_parser()
+	args = parser.parse_args(argv)
+	
+	csv_path = args.csv
+	if not csv_path:
+		csv_path = input("Enter path to sales CSV file:").strip()
+		
+	if not os.path.exists(csv_path):
+		logging.error("CSV file not found: %s", csv_path)
+		return 1
+		
+	try:
+		run_analysis(csv_path, top_n=args.top)
+	except Exception as exc:
+		logging.exception("Analysis failed: %s", exc)
+		return 2
+		
+	return 0
+	
+	
+if __name__ == "__main__":
+	raise SystemExit(main())
